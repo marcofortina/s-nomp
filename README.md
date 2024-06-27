@@ -58,7 +58,7 @@ Clone the repository and run `npm update` for all the dependencies to be install
 sudo apt-get install build-essential libsodium-dev npm libboost-all-dev
 sudo npm install n -g
 sudo n stable
-git clone https://github.com/s-nomp/s-nomp.git s-nomp
+git clone https://github.com/marcofortina/s-nomp.git s-nomp
 cd s-nomp
 npm update
 npm install

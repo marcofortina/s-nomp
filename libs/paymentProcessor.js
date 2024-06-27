@@ -108,9 +108,9 @@ function SetupForPool(logger, poolOptions, setupFinished){
                 logger.error(logSystem, logComponent, 'Error with payment processing daemon (validateAddress) ' + JSON.stringify(result.error));
                 callback(true);
             }
-            else if (!result.response || !result.response.ismine) {
+            else if (!result.response || !result.response.isvalid) {
                 logger.error(logSystem, logComponent,
-                    'Daemon does not own pool address - payment processing can not be done with this daemon, '
+                    'validateAddress:Daemon does not own pool address - payment processing can not be done with this daemon, '
                     + JSON.stringify(result.response));
                 callback(true);
             }
@@ -125,9 +125,9 @@ function SetupForPool(logger, poolOptions, setupFinished){
                 logger.error(logSystem, logComponent, 'Error with payment processing daemon (validateTAddress) ' + JSON.stringify(result.error));
                 callback(true);
             }
-            else if (!result.response || !result.response.ismine) {
+            else if (!result.response || !result.response.isvalid) {
                 logger.error(logSystem, logComponent,
-                    'Daemon does not own pool address - payment processing can not be done with this daemon, '
+                    'validateTAddress:Daemon does not own pool address - payment processing can not be done with this daemon, '
                     + JSON.stringify(result.response));
                 callback(true);
             }
@@ -142,9 +142,9 @@ function SetupForPool(logger, poolOptions, setupFinished){
                 logger.error(logSystem, logComponent, 'Error with payment processing daemon (validateZAddress) ' + JSON.stringify(result.error));
                 callback(true);
             }
-            else if (!result.response || !result.response.ismine) {
+            else if (!result.response || !result.response.isvalid) {
                 logger.error(logSystem, logComponent,
-                    'Daemon does not own pool address - payment processing can not be done with this daemon, '
+                    'validateZAddressDaemon:Daemon does not own pool address - payment processing can not be done with this daemon, '
                     + JSON.stringify(result.response));
                 callback(true);
             }
@@ -471,7 +471,7 @@ function SetupForPool(logger, poolOptions, setupFinished){
                     if (op.status == "success" || op.status == "failed") {
                         // clear operation id result
                         var opid_index = opids.indexOf(op.id);
-                        if (opid_index > -1) {
+                        if (opid_index > -1 || op.method == "saplingconsolidation") {
                             // clear operation id count
                             batchRPC.push(['z_getoperationresult', [[op.id]]]);
                             opidCount--;
@@ -782,7 +782,7 @@ function SetupForPool(logger, poolOptions, setupFinished){
                         }
 
                         // get the coin base generation tx
-                        const generationTx = tx.result.details.filter(tx => tx.address === poolOptions.address)[0]
+                        let generationTx = tx.result.details.filter(tx => tx.address === poolOptions.address)[0]
 
                         if (!generationTx && tx.result.details.length === 1) {
                             generationTx = tx.result.details[0]
@@ -960,26 +960,26 @@ function SetupForPool(logger, poolOptions, setupFinished){
                                 var workerTimes = {};
                                 var maxTime = 0;
                                 if (pplntEnabled === true) {
-	                                for (var workerAddressWithPoolId in workerTimesWithPoolIds){
+                                    for (var workerAddressWithPoolId in workerTimesWithPoolIds){
                                         var workerWithoutPoolId = workerAddressWithPoolId.split('.')[0];
                                         var workerTimeFloat = parseFloat(workerTimesWithPoolIds[workerAddressWithPoolId]);
                                         if (maxTime < workerTimeFloat) {
                                             maxTime = workerTimeFloat;
                                         }
-	                                    if (!(workerWithoutPoolId in workerTimes)) {
-	                                        workerTimes[workerWithoutPoolId] = workerTimeFloat;
-	                                    } else {
+                                        if (!(workerWithoutPoolId in workerTimes)) {
+                                            workerTimes[workerWithoutPoolId] = workerTimeFloat;
+                                        } else {
                                             // add time from other instances with penalty
-	                                        if (workerTimes[workerWithoutPoolId] < workerTimeFloat) {
-	                                            workerTimes[workerWithoutPoolId] = workerTimes[workerWithoutPoolId] * 0.5 + workerTimeFloat;
-	                                        } else {
+                                            if (workerTimes[workerWithoutPoolId] < workerTimeFloat) {
+                                                workerTimes[workerWithoutPoolId] = workerTimes[workerWithoutPoolId] * 0.5 + workerTimeFloat;
+                                            } else {
                                                 workerTimes[workerWithoutPoolId] = workerTimes[workerWithoutPoolId] + workerTimeFloat * 0.5;
                                             }
                                             if (workerTimes[workerWithoutPoolId] > maxTime) {
                                                 workerTimes[workerWithoutPoolId] = maxTime;
                                             }
-	                                    }
-	                                }
+                                        }
+                                    }
                                 }
                                 switch (round.category){
                                     case 'kicked':
@@ -1446,7 +1446,65 @@ function SetupForPool(logger, poolOptions, setupFinished){
                     }
                     callback();
                 });
-            }
+            },
+
+            function(callback) {
+                logger.warning(logSystem, logComponent, 'Searching for failed payouts')
+
+                const fixFailedPayments = (from, to) => {
+                    redisClient.zrange(`${coin}:payments`, -to, -from, (err, results) => {
+                        results.forEach(result => {
+                            let payment = JSON.parse(result)
+
+                            daemon.cmd('gettransaction', [payment.txid], result => {
+                                let transaction = result[0].response
+
+                                if (transaction === null) {
+                                    return
+                                }
+
+                                // logger.warning(logSystem, logComponent, `${payment.txid} has ${transaction.confirmations} confirmations.`)
+
+                                if (-1 == transaction.confirmations) {
+                                    logger.warning(logSystem, logComponent, `ERROR: ${payment.txid} has ${transaction.confirmations} confirmations.`)
+
+                                    let rpccallTracking = 'sendmany "" ' + JSON.stringify(payment.amounts)
+                                    // console.log(rpccallTracking);
+
+                                    daemon.cmd('sendmany', ['', payment.amounts], result => {
+                                        if (result.error) {
+                                            logger.warning(logSystem, logComponent, rpccallTracking)
+                                            return logger.error(logSystem, logComponent, `ERROR: Resending failed payment: ${JSON.stringify(result.error)}`)
+                                        }
+
+                                        if (!result.response) {
+                                            logger.warning(logSystem, logComponent, rpccallTracking)
+                                            return logger.error(logSystem, logComponent, `ERROR: Resent payment doesn't have a response: ${JSON.stringify(result)}`)
+                                        }
+
+                                        logger.special(logSystem, logComponent, `Resent payment to ${Object.keys(payment.amounts).length} miners; ${payment.txid} -> ${result.response}`)
+
+                                        // save payments data to redis
+                                        let oldPaymentTime = payment.time
+
+                                        payment.txid = result.response
+                                        payment.time = Date.now()
+
+                                        redisClient.zadd(`${coin}:payments`, Date.now(), JSON.stringify(payment))
+                                        redisClient.zremrangebyscore(`${coin}:payments`, oldPaymentTime, oldPaymentTime, () => {})
+                                    }, true, true);
+                                }
+                            })
+                        })
+                    })
+                }
+
+                fixFailedPayments(25, 25)
+                fixFailedPayments(50, 50)
+                fixFailedPayments(75, 75)
+
+                callback(null)
+            },
 
         ], function(){
 

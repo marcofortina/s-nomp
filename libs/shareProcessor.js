@@ -21,12 +21,14 @@ module.exports = function(logger, poolConfig){
     var redisConfig = poolConfig.redis;
     var coin = poolConfig.coin.name;
 
+    var processingConfig = poolConfig.paymentProcessing;
+    var soloEnabled = processingConfig.paymentMode === "solo" || false;
 
     var forkId = process.env.forkId;
     var logSystem = 'Pool';
     var logComponent = coin;
     var logSubCat = 'Thread ' + (parseInt(forkId) + 1);
-    
+
     var connection = CreateRedisClient(redisConfig);
     if (redisConfig.password) {
         connection.auth(redisConfig.password);
@@ -85,8 +87,14 @@ module.exports = function(logger, poolConfig){
         redisCommands.push(['zadd', coin + ':hashrate', dateNow / 1000 | 0, hashrateData.join(':')]);
 
         if (isValidBlock){
-            redisCommands.push(['rename', coin + ':shares:roundCurrent', coin + ':shares:round' + shareData.height]);
-            redisCommands.push(['rename', coin + ':shares:timesCurrent', coin + ':shares:times' + shareData.height]);
+            if (soloEnabled) {
+                /* NOTICE: You cannot switch an existing pool to SOLO. You must wipe the database due to how shares are stored */
+                redisCommands.push(['hincrbyfloat', coin + ':shares:round' + shareData.height, shareData.worker, shareData.difficulty]);
+            } else {
+                redisCommands.push(['rename', coin + ':shares:roundCurrent', coin + ':shares:round' + shareData.height]);
+                redisCommands.push(['rename', coin + ':shares:timesCurrent', coin + ':shares:times' + shareData.height]);
+            }
+
             redisCommands.push(['sadd', coin + ':blocksPending', [shareData.blockHash, shareData.txHash, shareData.height, shareData.worker, dateNow].join(':')]);
             redisCommands.push(['hincrby', coin + ':stats', 'validBlocks', 1]);
         }
